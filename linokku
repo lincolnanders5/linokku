@@ -26,18 +26,48 @@ class CLI < Thor
     log :default, "connection to #{host_ip} closed"
   end
 
+  desc "roll", "provisions a new Linode server"
+  def roll
+    ssh_keys = File.open(File.expand_path("~/.ssh/id_rsa.pub"))
+    ssh_key  = ssh_keys.read.chomp
+    status = system "linode-cli linodes create --authorized_keys '#{ssh_key}' --root_pass"
+  end
+
+  desc "setup REMOTE_IP APP_NAME DOMAIN", "creates APP_NAME on REMOTE_IP"
+  def setup host_ip, app_name, domain
+    ssh_session host_ip do |ssh|
+      log :debug, "adding domain: '#{app_name}' -> '#{domain}'"
+      ssh.exec! "dokku domains:add #{app_name} #{domain}"
+      log :debug, "adding app.json path for '#{app_name}'"
+      ssh.exec! "dokku app-json:set #{app_name} appjson-path app.json"
+    end
+
+    return log :error, "not in a git repo" unless File.directory?(File.expand_path("./.git"))
+    has_dokku = system "git remote -v | grep 'dokku@#{host_ip}:#{app_name}' > /dev/null"
+
+    log :debug, "dokku remote for app '#{app_name}' has #{has_dokku ? "already" : "not" } been configured"
+    unless has_dokku
+      log :info, "adding new remote '#{app_name}' for current project"
+      `git remote add #{app_name} dokku@#{host_ip}:#{domain}`
+    end
+
+    add_ssh_keys host_ip
+  end
+
   private
 
   def init_host host_ip
     ssh_session host_ip do |ssh|
-      has_bootstrap = file_exists?(ssh, '/tmp/bootstrap.sh')
+      has_bootstrap = file_exists?(ssh, 'bootstrap.sh')
 
-      log :debug, "/tmp/bootstrap.sh#{has_bootstrap ? " " : " not "}found"
+      log :debug, "bootstrap.sh#{has_bootstrap ? " " : " not "}found"
       unless has_bootstrap
         log :default, "downloading dokku bootstrap.sh @ #{DOKKU_TAG}..."
         ssh.exec!("wget 'https://raw.githubusercontent.com/dokku/dokku/#{DOKKU_TAG}/bootstrap.sh'")
+
         log :debug, "installing dokku..."
-	    ssh.exec!("bash bootstrap.sh")
+	      ssh.exec!("bash bootstrap.sh")
+
         log :default, "  done"
       end
     end
@@ -46,7 +76,8 @@ class CLI < Thor
   def add_ssh_keys host_ip
     log :info, "syncing dokku ssh keys with host keys..."
     ssh_session host_ip do |ssh|
-      ssh.exec!("cat ~/.ssh/authorized_keys | dokku ssh-keys:add admin")
+      key = ssh.exec!("cat ~/.ssh/authorized_keys | dokku ssh-keys:add admin")
+      log :debug, "ssh key added: #{key}"
     end
     log :info, "  done"
   end
@@ -55,7 +86,7 @@ class CLI < Thor
     has_file = false
     ssh.exec!("ls -l '#{path}'") do |channel, stream, data|
       log :debug, "checking if '#{path}' exists..."
-      has_file = true if stream == :stdout && /bootstrap/.match(data)
+      has_file = true if stream == :stdout && data.include?(path)
     end
     has_file
   end

@@ -25,6 +25,6 @@ module MiniLog
 
   private
   @@log_level  = ENV["LOG_LEVEL"]&.to_sym || :debug
-  @@log_degree = { debug: 4, info: 3, default: 2, none: 1 }
+  @@log_degree = { debug: 4, info: 3, default: 2, none: 1, error: 0 }
   @@log_shift  = 0
 end
