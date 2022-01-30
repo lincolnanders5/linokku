@@ -1,40 +1,36 @@
-#!/usr/bin/env ruby
+#!/bin/env ruby
 require 'thor'
 require 'net/ssh'
+require_relative 'minilog'
 
 class CLI < Thor
-  desc "install (remote_ip)", "installs dokku on host specified by REMOTE_IP"
-  def install(host_ip='127.0.0.1')
+  include MiniLog
+
+  DOKKU_TAG = ENV["DOKKU_TAG"] || 'v0.26.6'
+
+  desc "install (REMOTE_IP)", "installs dokku on host specified by REMOTE_IP"
+  def install(host_ip = ENV["REMOTE_IP"] || '127.0.0.1')
     log :default, "installing dokku on host #{host_ip}"
 
-    init_host host_ip
+    init_host    host_ip
+    add_ssh_keys host_ip
+  end
+
+  desc "exec [REMOTE_IP] [COMMAND] (OPTIONS)", "provides direct access to dokku on REMOTE_IP"
+  def exec(host_ip = '127.0.0.1', *kwargs)
+    kwargs = kwargs.join(" ")
+    log :default, "running 'dokku #{kwargs}' on host #{host_ip}"
+    ssh_session host_ip do |ssh|
+      puts ssh.exec!("dokku #{kwargs}")
+    end
+    log :default, "connection to #{host_ip} closed"
   end
 
   private
 
-  GLOBAL_LOG_LEVEL = ENV["LOG_LEVEL"]&.to_sym || :debug
-  LOG_DEGREE       = { debug: 4, info: 3, default: 2, none: 1 }
-  $log_shift       = 0
-  def log(level=:debug, message=nil)
-    return if message.nil?
-    level_str = level.to_s.ljust(7, ' ')
-    message   = ('--' * $log_shift) + '> ' + message
-    puts("[#{level_str}] #{message}") unless LOG_DEGREE[level] > LOG_DEGREE[GLOBAL_LOG_LEVEL]
-  end
-
-  def shift_log
-    $log_shift += 1
-  end
-
-  def unshift_log
-    $log_shift -= 1
-  end
-
-  DOKKU_TAG = ENV["DOKKU_TAG"] || 'v0.26.6'
   def init_host host_ip
-    shift_log
-    Net::SSH.start(host_ip, 'root') do |ssh|
-      has_bootstrap = file_exists? ssh, '/tmp/bootstrap2.sh'
+    ssh_session host_ip do |ssh|
+      has_bootstrap = file_exists?(ssh, '/tmp/bootstrap.sh')
 
       log :debug, "/tmp/bootstrap.sh#{has_bootstrap ? " " : " not "}found"
       unless has_bootstrap
@@ -45,17 +41,34 @@ class CLI < Thor
         log :default, "  done"
       end
     end
-    unshift_log
+  end
+
+  def add_ssh_keys host_ip
+    log :info, "syncing dokku ssh keys with host keys..."
+    ssh_session host_ip do |ssh|
+      ssh.exec!("cat ~/.ssh/authorized_keys | dokku ssh-keys:add admin")
+    end
+    log :info, "  done"
   end
 
   def file_exists? ssh, path
     has_file = false
     ssh.exec!("ls -l '#{path}'") do |channel, stream, data|
+      log :debug, "checking if '#{path}' exists..."
       has_file = true if stream == :stdout && /bootstrap/.match(data)
     end
-    return has_file
+    has_file
   end
 
+  def ssh_session host_ip = '127.0.0.1'
+    port  = ENV['SSH_PORT'] || 22
+    uname = ENV['SSH_USER'] || 'root'
+    Net::SSH.start(host_ip, uname, { port: port }) do |ssh|
+      log_shift do
+        yield ssh
+      end
+    end
+  end
 end
 
 CLI.start(ARGV)
